@@ -1,8 +1,7 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-
-
+<title>1-Bit Dither</title>
 </head>
 <body style="font-family:arial">
 <div style="float:left">
@@ -10,6 +9,13 @@
 </div>
 
 <div style="float:left;margin-left:20px;">
+			<div class="tool">Filter:&nbsp;<select id="filter">
+						<option value="fs" selected>Floyd Steinberg</option>
+						<option value="atkinson">Atkinson</option>
+						<option value="sierra">Sierra Lite</option>
+						<option value="threshold">Threshold</option>
+					</select>
+			</div>
 			<div class="tool">Scan Pattern:&nbsp;<input type="radio" name="scan_pattern" class="" value="1" checked/>Raster&nbsp;
 					  <input type="radio" name="scan_pattern" class="" value="0"/>Serpentine&nbsp;
 			</div>
@@ -20,8 +26,33 @@
 <script src="./scripts/jquery-1.7.2.min.js"></script>
 <script>
 (function($){
+	function ErrorTechnique(initObj){
+		this.name = initObj.name;
+		this.weights = initObj.weights || 1;
+		this.divisor = initObj.divisor;
+		this.nxy_offsets = initObj.nxy_offsets;
+		var _parent = this;
+		this.setNXY = function(x, y){
+			_parent.nxy = [];
+			var temp_obj;
+			var dx, dy;
+			for (var i=0; i < this.nxy_offsets.length; i += 1){
+				temp_obj = {x: 0, y: 0};
+				dx = _parent.nxy_offsets[i].dx;
+				dy = _parent.nxy_offsets[i].dy;
+	
+				temp_obj.x = x + dx;
+				temp_obj.y = y + dy;
+				_parent.nxy.push(temp_obj);
+			}
+		}
+	}
 
-	function dither(imgData, vertical_scan, raster){
+
+	function dither(imgData, img){
+		var vertical_scan = img.vertical_scan;
+		var raster = img.raster;
+		var filter = img.filter;
 		var data = imgData.data;
 		var w = imgData.width;
 		var h = imgData.height;
@@ -29,7 +60,7 @@
 		var new_value, old_value, err;
 		var x = y = 0;
 		var dx = dy = 1;
-		
+	
 		if (raster){
 			rasterScan();
 		} else {
@@ -39,16 +70,19 @@
 		return data;
 
 		function rasterScan(){
+			var em;
 			if (vertical_scan){
-				for(y = 0; y < h; y++){
-					for (x = 0; x < w; x++){
-						diffuseError();
+				for (x = 0; x < w; x+=1){
+					for(y = 0; y < h; y++){
+						filter.down.setNXY(x,y);
+						diffuseError(filter.down);
 					}
 				}
 			} else {
-				for (x = 0; x < w; x++){
-					for(y = 0; y < h; y++){
-						diffuseError();
+				for(y = 0; y < h; y+=1){
+					for (x = 0; x < w; x++){
+						filter.right.setNXY(x,y);
+						diffuseError(filter.right);
 					}
 				}
 			}	
@@ -56,9 +90,12 @@
 
 
 		function serpentineScan(){
+			var active_technique;
 			if (vertical_scan){
 				while (x < w){
-					diffuseError();
+					active_technique = (dy === 1) ? filter.down : filter.up;
+					active_technique.setNXY(x,y);
+					diffuseError(active_technique);
 					y += dy;
 
 					if (y === h){
@@ -73,7 +110,9 @@
 				}
 			} else {
 				while (y < h){
-					diffuseError();
+					active_technique = (dx === 1) ? filter.right : filter.left;
+					active_technique.setNXY(x,y);
+					diffuseError(active_technique);
 					x += dx;
 					if (x === w){
 						dx = -1;
@@ -89,28 +128,21 @@
 
 // private member function to calculate and propogate 
 // the error to adjacent pixels
-// according to the atkinson dithering algorithm
-//	    x  1/8 1/8 
-//     1/8 1/8 1/8
-//         1/8
+// according to error_technique, which represents an 
+// ErrorTechnique object  
 
-		function diffuseError(){
-				var nxy = [{x: x+1, y: y},
-					   {x: x+2, y: y},
-					   {x: x-1, y: y+1},
-					   {x: x, y: y+1},
-					   {x: x+1, y: y+1},
-					   {x: x, y: y+2}];
+		function diffuseError(error_technique){
+				var nxy = error_technique.nxy;
 				d_index = findDataIndex(x, y, w);	
 				old_value = data[d_index];
 				new_value = (old_value > 128) ? 255 : 0;
 				data[d_index] = data[d_index + 1] = data[d_index + 2] = new_value;
-				err = (old_value - new_value) >> 3;
+				err = ((old_value - new_value) >> error_technique.divisor); 
 				$.each(nxy, function(i, px){
 					if (inBounds(px.x, px.y, w, h)){
 						var o_index = findDataIndex(px.x, px.y, w);
 						var val = data[o_index];
-						data[o_index] = data[o_index + 1] = data[o_index + 2] = val + err;
+						data[o_index] = data[o_index + 1] = data[o_index + 2] = val + (err * error_technique.weights[i]);
 					}
 				});
 		}
@@ -133,7 +165,9 @@
 			}
 			return false;
 		}
-	};
+	}
+
+// function to convert dithered image data to a binary representation. Not all that useful as is. 
 
 	function toBinary(imgData){
 		var output = [];
@@ -142,7 +176,10 @@
 			output[i] = (data[i*4] === 255) ? 1 : 0; 
 		}
 		return output;
-	};
+	}
+
+// function to convert color image to grayscale. Uses a YIQ colorspace luminance model for each
+// pixel's quantization
 
 	function grayscale(imgData){
 		var r,g,b,a,l;
@@ -159,7 +196,137 @@
 		}	
 		imgData.data = data;
 		return imgData;
-	};
+	}
+
+// generic Filter object to hold the four possible ErrorTechnique objects that define how
+// error propogates based on the scan direction
+
+	function Filter(right, left, up, down){
+		this.right = right;
+		this.left = left;
+		this.up = up;
+		this.down = down;
+	}
+	
+	function defineAtkinsonFilters(){
+		var atkinson_right = new ErrorTechnique({name: 'atkinson_right',
+							 nxy_offsets: [{dx: 1, dy: 0},
+								       {dx: 2, dy: 0},
+								       {dx: -1, dy: 1},
+								       {dx: 0, dy: 1},
+								       {dx: 1, dy: 1},
+								       {dx: 0, dy: 2}],
+							 weights: [1,1,1,1,1,1],
+							 divisor: 3});
+
+		var atkinson_left = new ErrorTechnique({name: 'atkinson_left', 
+							nxy_offsets: [{dx:-1, dy: 0},
+  								      {dx:-2, dy:0},
+								      {dx:-1, dy: 1},
+								      {dx:0, dy: 1},
+								      {dx:1, dy: 1},
+								      {dx:0, dy: 2}],
+							weights: [1,1,1,1,1,1],
+							divisor: 3});
+
+		var atkinson_up = new ErrorTechnique({name: 'atkinson_up', 
+					              nxy_offsets: [{dx:0, dy: -1},
+  								      {dx:0, dy:-2},
+								      {dx:1, dy: -1},
+								      {dx:1, dy: 0},
+								      {dx:1, dy:1},
+								      {dx:2, dy: 0}],
+						       weights: [1,1,1,1,1,1],
+						       divisor: 3});
+
+		var atkinson_down = new ErrorTechnique({name: 'atkinson_down',
+							 nxy_offsets: [{dx: 0, dy: 1},
+								       {dx: 0, dy: 2},
+								       {dx: 1, dy: -1},
+								       {dx: 1, dy: 0},
+								       {dx: 1, dy: 1},
+								       {dx: 2, dy: 0}],
+							 weights: [1,1,1,1,1,1],
+							 divisor: 3});
+
+		return new Filter(atkinson_right, atkinson_left, atkinson_up, atkinson_down);
+	}
+	
+	function defineSierraFilters(){
+		var sierra_right = new ErrorTechnique({name: 'sierra_right', 
+						       nxy_offsets: [{dx: 1, dy: 0},
+                                                                     {dx: -1, dy: 1},
+                                                                     {dx: 0, dy: 1}],
+							weights: [2,1,1],
+							divisor: 2});
+		
+		var sierra_left = new ErrorTechnique({name: 'sierra_left', 
+						       nxy_offsets: [{dx: -1, dy: 0},
+                                                                     {dx: 1, dy: 1},
+                                                                     {dx: 0, dy: 1}],
+							weights: [2,1,1],
+							divisor: 2});
+
+		var sierra_up = new ErrorTechnique({name: 'sierra_up', 
+						       nxy_offsets: [{dx: 0, dy: -1},
+                                                                     {dx: 1, dy: 1},
+                                                                     {dx: 1, dy: 0}],
+							weights: [2,1,1],
+							divisor: 2});
+
+		var sierra_down = new ErrorTechnique({name: 'sierra_down', 
+						       nxy_offsets: [{dx: 0, dy: 1},
+                                                                     {dx: 1, dy: 1},
+                                                                     {dx: 1, dy: 0}],
+							weights: [2,1,1],
+							divisor: 2});
+		return new Filter(sierra_right, sierra_left, sierra_up, sierra_down);
+	}
+
+	function defineFloydSteinbergFilters(){
+		var fs_right = new ErrorTechnique({name:'fs_right',
+                                                   nxy_offsets: [{dx: 1, dy: 0},
+							         {dx:-1, dy: 1},  
+							         {dx:0, dy: 1},  
+							         {dx:1, dy: 1}],
+						   weights: [7,3,5,1],
+						   divisor: 4});
+
+		var fs_left = new ErrorTechnique({name:'fs_left',
+                                                   nxy_offsets: [{dx: -1, dy: 0},
+							         {dx:1, dy: 1},  
+							         {dx:0, dy: 1},  
+							         {dx:-1, dy: 1}],
+						   weights: [7,3,5,1],
+						   divisor: 4});
+		
+		var fs_up = new ErrorTechnique({name:'fs_up',
+                                                   nxy_offsets: [{dx: 0, dy: -1},
+							         {dx:1, dy: 1},  
+							         {dx:1, dy: 0},  
+							         {dx:1, dy: -1}],
+						   weights: [7,3,5,1],
+						   divisor: 4});
+
+		var fs_down = new ErrorTechnique({name:'fs_down',
+                                                   nxy_offsets: [{dx: 0, dy: 1},
+							         {dx:1, dy: -1},  
+							         {dx:1, dy: 0},  
+							         {dx:1, dy: 1}],
+						   weights: [7,3,5,1],
+						   divisor: 4});
+
+		return new Filter(fs_right, fs_left, fs_up, fs_down);
+	}
+
+	function defineThresholdFilters(){
+
+		var t = new ErrorTechnique({name: 'threshold_right',
+						  nxy_offsets: [{dx: 0, dy: 0}],
+						  weights : [0],
+						  divisor: 0});
+		return new Filter(t, t, t, t);
+	}
 
 	var canvas = $("#canvas")[0];
 	var ctx = canvas.getContext("2d");
@@ -168,6 +335,7 @@
 	var img = new Image();
 	img.vertical_scan = false;
 	img.raster = true;
+	img.filter = defineFloydSteinbergFilters();
 	img.onload = function(){
 		var img_w = this.width;
 		var img_h = this.height;
@@ -191,7 +359,7 @@
 
 		this.original_img_data = ctx.getImageData(0,0,canvas.width, canvas.height);
 	        var imgData = grayscale(this.original_img_data);	
-		imgData.data = dither(imgData, img.vertical_scan, img.raster);
+		imgData.data = dither(imgData, img);
 		ctx.putImageData(imgData,0,0);
 	};
 
@@ -201,6 +369,14 @@
 	ctx.fillStyle = "#a4a4a4";
 	ctx.fillText("Drop An Image Here", 400, 300);
 
+// Check the default values on page load for filter, scan direction, and scan pattern
+
+	$('#filter option[value="fs"]').prop('selected','selected');	
+	$('input:radio[name=scan_pattern][value=1]').prop('checked', true);
+	$('input:radio[name=scan_direction][value=1]').prop('checked', true);
+
+// attach change event handlers to scan direction, scan pattern, and filter elements
+
 	$('input:radio[name="scan_direction"]').change(function(){
 		img.vertical_scan = (+$(this).val()) ? false : true;
 		img.onload();
@@ -208,6 +384,20 @@
 
 	$('input:radio[name="scan_pattern"]').change(function(){
 		img.raster = (+$(this).val()) ? true : false;
+		img.onload();
+	});
+
+	$('#filter').change(function(){
+		var technique = $('#filter option:selected').val();
+		if (technique === "fs"){
+			img.filter = defineFloydSteinbergFilters();
+		} else if (technique === "atkinson"){
+			img.filter = defineAtkinsonFilters();
+		} else if (technique === "sierra"){
+			img.filter = defineSierraFilters();
+		} else {
+			img.filter = defineThresholdFilters();
+		}
 		img.onload();
 	});
 
